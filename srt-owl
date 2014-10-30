@@ -1,0 +1,105 @@
+#! /usr/bin/env perl
+
+# newvocab 
+#
+# Extract rare words from articles or subtitle files to
+# learn foreign vocabulary.
+#
+# Author: Larion Garaczi
+# Date: 2014
+
+use 5.018;
+use warnings;
+use Getopt::Long;
+use Term::ANSIColor qw / :constants /;
+
+# Parse command line parameters.
+
+my %options = ( 
+	"lang" => "nl",  # LANGUAGE: default language is Dutch
+	"low" => 5, # LOWEST: default is to not show words that are among the first 5000 most frequent words..
+	"high" => 50, # HIGHEST default is to show only words that are in the first 50000 most frequent words
+	"type" => "txt", # TYPE: assume text input TODO add .srt and .html functionality
+);
+
+GetOptions(
+	"lang=s" => \$options{"lang"},
+	"low=i" => \$options{"low"},
+	"high=i" => \$options{"high"},
+	"type=s" => \$options{"type"},
+);
+
+die "ERROR: --high value must be higher than --low value.\n" 
+  if $options{"high"} <= $options{"low"};
+
+my $freqlist_fname = "freqlists/$options{'lang'}.txt";
+open my $freq_list_fh, '<', $freqlist_fname or
+  die "Can't open language file: $!";
+
+# process freq_list
+# TODO more extensive word properties!!
+
+my %freqlist; # map words to their place in the frequency lists
+my($i, $total_occurences);
+for(<$freq_list_fh>){
+	chomp;
+	$i++; # count the words
+	my($word, $occurences) = split;
+	my $total_occurences+=$occurences;
+	$freqlist{$word} = $i;
+}
+
+# say for @freqlist{"en", "ik","onafhankelijk", "doesntexist00000000"};
+
+# Collect rare words from every input file
+# and print them.
+
+my $SENTENCE_SEP = "([\.\?!])"; # sentence ending characters
+
+for(@ARGV){
+	my %wordlist = ();
+	my $inp_file;
+	unless(open $inp_file, '<', "$_"){
+		warn "Can't open input file: $!";
+		next;
+	}
+	say "==$_=="; # print name of current input file
+	for(<$inp_file>){
+		chomp;
+		# split sentences, than reinsert the punctuation
+		my @sentences = split /$SENTENCE_SEP/;
+		for(0..$#sentences){
+			next if $sentences[$_] =~ /$SENTENCE_SEP/;
+			$sentences[$_] .= $sentences[$_+1]
+			  if defined($sentences[$_+1]);
+		}
+		for(@sentences){
+			my @words = split /\b/;
+			my $sentence = $_;
+			my $begin_sentence = 1;
+			for(@words){
+				next if /^[A-Z]/ and not $begin_sentence;
+				$begin_sentence = 0;
+				s/([A-Z])/\L$1/g; # case-insensitivity. TODO add switch?
+				next if not /^[a-z]+$/; # filter out numbers and the like TODO unicode!
+				# only collect words which are
+				# 1) rare enough as provided by the user
+				# 2) are in the dictionary.
+				$wordlist{$_}=$sentence if 
+				  defined($freqlist{$_}) and  # word should be in the dictionary
+				  $freqlist{$_} >= $options{"low"}*1000 and # low cut-off
+				  $freqlist{$_} <= $options{"high"}*1000; # high cut-off
+		  }
+		}
+	}
+	for(sort keys %wordlist){
+		say BOLD, $_, RESET; #TODO boldprint subroutine + add switch
+		# print context TODO make optional
+		$wordlist{$_} =~ /(?<pre>(\b\S+\b\W*){0,20}) # max 10 words before
+		(?<target>$_)
+		(?<post>(\W*(\W*?\b\S+\b){0,20}\.?))/xi; # and 10 words after
+		say "$+{pre}", BOLD, "$+{target}", RESET, "$+{post}";
+		say "";
+		#print "..." if $+{post}[-1]
+	}
+  }
