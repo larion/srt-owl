@@ -3,7 +3,12 @@ srt-owl
 
 Collect difficult (rare) words from a text or a subtitle file to learn new
 foreign vocabulary and to do all the looking-up beforehand. It only works for
-Dutch at the moment. For dictionary lookups it uses my scraper for woorden.org,
+Dutch at the moment. A good idea could be to use this with a spaced-repetition
+based flashcard system like Anki for example. Also it might make for a smooth
+transition between being able to understand foreign language movies with subtitles 
+and without them.
+
+For dictionary lookups it uses my scraper for woorden.org,
 which you can get from my Github page. The frequency lists are from:
 http://invokeit.wordpress.com/frequency-word-lists/. This script has only been
 tested on Linux yet.
