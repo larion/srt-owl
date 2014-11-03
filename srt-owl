@@ -1,6 +1,6 @@
 #! /usr/bin/env perl
 
-# newvocab 
+# srt-owl 
 #
 # Extract rare words from articles or subtitle files to
 # learn foreign vocabulary.
@@ -20,6 +20,7 @@ my %options = (
 	"low" => 5, # LOWEST: default is to not show words that are among the first 5000 most frequent words..
 	"high" => 50, # HIGHEST default is to show only words that are in the first 50000 most frequent words
 	"type" => "txt", # TYPE: assume text input TODO add .srt and .html functionality
+	"interactive" => 1
 );
 
 GetOptions(
@@ -27,6 +28,7 @@ GetOptions(
 	"low=i" => \$options{"low"},
 	"high=i" => \$options{"high"},
 	"type=s" => \$options{"type"},
+	"interactive!" => \$options{"interactive"},
 );
 
 die "ERROR: --high value must be higher than --low value.\n" 
@@ -70,8 +72,7 @@ for(@ARGV){
 		my @sentences = split /$SENTENCE_SEP/;
 		for(0..$#sentences){
 			next if $sentences[$_] =~ /$SENTENCE_SEP/;
-			$sentences[$_] .= $sentences[$_+1]
-			  if defined($sentences[$_+1]);
+			$sentences[$_] .= $sentences[$_+1] // "";
 		}
 		for(@sentences){
 			my @words = split /\b/;
@@ -86,20 +87,103 @@ for(@ARGV){
 				# 1) rare enough as provided by the user
 				# 2) are in the dictionary.
 				$wordlist{$_}=$sentence if 
-				  defined($freqlist{$_}) and  # word should be in the dictionary
+				  defined($freqlist{$_}) and  # word should be in the dictionary TODO exists?
 				  $freqlist{$_} >= $options{"low"}*1000 and # low cut-off
 				  $freqlist{$_} <= $options{"high"}*1000; # high cut-off
-		  }
+			  }
 		}
 	}
+	if($options{interactive}){
+		interactive(%wordlist);
+	}
+	else{
+		printwordlist(%wordlist);
+	}
+}
+
+sub get_context{
+	my $word = pop @_;
+	my %wordlist = @_;
+	$wordlist{$word} =~ /(?<pre>(\b\S+\b\W*){0,20}) # max 10 words before
+	(?<target>$word)
+	(?<post>(\W*(\W*?\b\S+\b){0,20}\.?))/xi; # and 10 words after
+	return "$+{pre}", BOLD, "$+{target}", RESET, "$+{post}";
+}
+sub printwordlist{
+	my %wordlist = @_;
 	for(sort keys %wordlist){
 		say BOLD, $_, RESET; #TODO boldprint subroutine + add switch
+		say get_context(%wordlist, $_);
 		# print context TODO make optional
-		$wordlist{$_} =~ /(?<pre>(\b\S+\b\W*){0,20}) # max 10 words before
-		(?<target>$_)
-		(?<post>(\W*(\W*?\b\S+\b){0,20}\.?))/xi; # and 10 words after
-		say "$+{pre}", BOLD, "$+{target}", RESET, "$+{post}";
-		say "";
 		#print "..." if $+{post}[-1]
 	}
-  }
+}
+
+sub interactive{ #TODO break this up!
+	my %wordlist = @_;
+	my %tosave;
+	my $finished;
+	for(sort keys %wordlist){
+		last if($finished);
+		my $word = $_;
+		while(1){
+			print BOLD, $word, RESET, " (C)ontext/(D)ictionary/(S)ave/(Q)uit/(N)ext: ";
+			chomp ($_ = <STDIN>);
+			if(/^C/i){ # Display context
+				say get_context(%wordlist, $word);
+				next;
+			}
+			elsif(/^D/i){ # Look up word in dictionary
+				my $target;
+				$target = $word if(/^D$/i); # wihout arguments look up the word
+				# look up the argument if any (useful for inflection etc.)
+				$target = $1 if(/^D\s+([a-z]+)/i);
+				say $target;
+				system "woorden $target"; #TODO fix security leak
+				next;
+			}
+			elsif(/^S/i){ # Save word to file
+				my $target;
+				$target = $word if(/^D$/i); # wihout arguments save the word
+				# save the argument if there is any (useful for inflection etc.)
+				$target = $1 if(/^D\s+([a-z]+)/i);
+				$tosave{$word} = 1;
+
+			}
+			elsif(/^Q/i){ # Quit (break out from loop and save words)
+				$finished = 1; # set flag to break out from the for loop
+				last;
+			}
+			elsif(/^N/i or /^$/){ # Go to next word
+				last; #TODO add to ignore list
+			}
+			else{
+				say "Please choose one!";
+				redo;
+			}
+		}
+	}
+	# save the words from %tosave
+	my @words = keys %tosave;
+	if(@words){
+		my $out_name = "words.out";
+		if(-e $out_name){
+			print "Warning: output file $out_name exists, overwrite? (y/n) ";
+			while(my $user_input = <STDIN>){
+				if($user_input =~ /^y/i){
+					last;
+				}
+				elsif($user_input =~ /^n/i){
+					return;
+				}
+				else{
+					next;
+				}
+			}
+		}
+		open my $out_fh, ">", "$out_name"
+		  or die "Can't open output file, reason: $!";
+		say $out_fh $_ for(@words);
+	}
+}
+
