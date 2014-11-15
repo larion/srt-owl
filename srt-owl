@@ -20,8 +20,15 @@ use warnings;
 use Getopt::Long;
 use Term::ANSIColor qw / :constants /;
 
-# Parse command line parameters.
+use lib "lib";
+use GetDBHandle "db_handle";
 
+### GLOBALS ###
+my $DB_NAME = "srt-owl.db";
+###############
+
+# Parse command line parameters.
+# TODO make subroutine
 my %options = ( 
 	"lang" => "nl",  # LANGUAGE: default language is Dutch
 	"low" => 5, # LOWEST: default is to not show words that are among the first 5000 most frequent words..
@@ -41,38 +48,63 @@ GetOptions(
 die "ERROR: --high value must be higher than --low value.\n" 
   if $options{"high"} <= $options{"low"};
 
-my $freqlist_fname = "freqlists/$options{'lang'}.txt";
-open my $freq_list_fh, '<', $freqlist_fname or
-  die "Can't open language file: $!";
-
-# process freq_list
-# TODO more extensive word properties!!
-
-my %freqlist; # map words to their place in the frequency lists
-my($i, $total_occurences);
-for(<$freq_list_fh>){
-	chomp;
-	$i++; # count the words
-	my($word, $occurences) = split;
-	my $total_occurences+=$occurences;
-	$freqlist{$word} = $i;
-}
-
-# say for @freqlist{"en", "ik","onafhankelijk", "doesntexist00000000"};
-
-# Collect rare words from every input file
-# and print them.
-
-my $SENTENCE_SEP = "([\.\?!])"; # sentence ending characters
+# Collect all words from every input file
 
 for(@ARGV){
-	my %wordlist = ();
+	my $wordlist = {};
 	my $inp_file;
 	unless(open $inp_file, '<', "$_"){
 		warn "Can't open input file: $!";
 		next;
 	}
 	say "==$_=="; # print name of current input file
+	
+	collect_words($inp_file, $wordlist);
+	my %results = filter_words($wordlist);
+
+	if($options{interactive}){
+		interactive(%results);
+	}
+	else{
+		printwordlist(%results);
+	}
+}
+
+sub filter_words{
+	my $words_href = shift;
+	my %out_wordlist;
+
+	# connect to database (TODO modularize)
+
+	my $dbh = DBI->connect(
+		"dbi:SQLite:$DB_NAME",
+		"", # no username
+		"", # no password
+		{PrintError => 0, RaiseError => 1, AutoCommit => 0, ReadOnly => 1}
+	) or die "Can't connect to database: $DBI::errstr\n";
+	$dbh->do("PRAGMA synchronous = OFF; PRAGMA journal_mode = WAL;"); # speed-up!
+
+	# collect words which
+	# 1) we encountered in the input file
+	# 1) is in the frequency interval provided by the user
+	my $select_words_query =<<"SQL";
+SELECT word FROM words WHERE word == ? AND id >= ? AND id <= ?;
+SQL
+	my $sth = $dbh->prepare($select_words_query);
+	my($low, $high) = ($options{"low"}*1000, $options{"high"}*1000);
+	for my $word (keys %$words_href){ 
+		#say "DEBUG: $word";
+		$sth->execute($word, $low, $high); #TODO do sth about the constant
+		# copy word data to the filtered list if there is a match.
+		$out_wordlist{$word} = $words_href->{$word} if($sth->fetch);
+	}
+	return %out_wordlist;
+}
+
+sub collect_words{
+	my($inp_file, $words_hr) = @_;
+	# TODO more clever tokenization of sentences?
+	my $SENTENCE_SEP = "([\.\?!])"; # sentence ending characters
 	for(<$inp_file>){
 		chomp;
 		# split sentences, than reinsert the punctuation
@@ -90,21 +122,12 @@ for(@ARGV){
 				$begin_sentence = 0;
 				s/([A-Z])/\L$1/g; # case-insensitivity. TODO add switch?
 				next if not /^[a-z]+$/; # filter out numbers and the like TODO unicode!
-				# only collect words which are
-				# 1) rare enough as provided by the user
-				# 2) are in the dictionary.
-				$wordlist{$_}=$sentence if 
-				  defined($freqlist{$_}) and  # word should be in the dictionary TODO exists?
-				  $freqlist{$_} >= $options{"low"}*1000 and # low cut-off
-				  $freqlist{$_} <= $options{"high"}*1000; # high cut-off
+				# OK, found a word. Add the new context and increase occurence tally
+				$words_hr->{$_}{contexts} = []; #TODO delete
+				push $words_hr->{$_}{contexts}, $sentence;
+				$words_hr->{$_}{occurences}++;
 			  }
 		}
-	}
-	if($options{interactive}){
-		interactive(%wordlist);
-	}
-	else{
-		printwordlist(%wordlist);
 	}
 }
 
@@ -193,4 +216,3 @@ sub interactive{ #TODO break this up!
 		say $out_fh $_ for(@words);
 	}
 }
-
