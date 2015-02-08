@@ -1,6 +1,6 @@
 #! /usr/bin/env perl
 
-# srt-owl 
+# srt-owl
 #
 # Extract rare words from articles or subtitle files to
 # learn foreign vocabulary.
@@ -21,15 +21,16 @@ use Getopt::Long;
 use Term::ANSIColor qw / :constants /;
 
 use lib "lib";
-use GetDBHandle "db_handle";
+use GetDBHandle "db_handle"; #TODO delete or use this
 
 ### GLOBALS ###
-my $DB_NAME = "srt-owl.db";
+use constant DB_NAME          => "srt-owl.db";
+use constant SAVED_WORDS_PATH => "words.out";
 ###############
 
 # Parse command line parameters.
 # TODO make subroutine
-my %options = ( 
+my %options = (
 	"lang" => "nl",  # LANGUAGE: default language is Dutch
 	"low" => 5, # LOWEST: default is to not show words that are among the first 5000 most frequent words..
 	"high" => 50, # HIGHEST default is to show only words that are in the first 50000 most frequent words
@@ -45,7 +46,7 @@ GetOptions(
 	"interactive!" => \$options{"interactive"},
 );
 
-die "ERROR: --high value must be higher than --low value.\n" 
+die "ERROR: --high value must be higher than --low value.\n"
   if $options{"high"} <= $options{"low"};
 
 # Collect all words from every input file
@@ -58,7 +59,7 @@ for(@ARGV){
 		next;
 	}
 	say "==$_=="; # print name of current input file
-	
+
 	collect_words($inp_file, $wordlist);
 	my %results = filter_words($wordlist);
 
@@ -70,18 +71,19 @@ for(@ARGV){
 	}
 }
 
-sub filter_words{
+sub filter_words {
 	my $words_href = shift;
 	my %out_wordlist;
 
 	# connect to database (TODO modularize)
 
 	my $dbh = DBI->connect(
-		"dbi:SQLite:$DB_NAME",
+		sprintf("dbi:SQLite:%s", DB_NAME),
 		"", # no username
 		"", # no password
 		{PrintError => 0, RaiseError => 1, AutoCommit => 0, ReadOnly => 1}
-	) or die "Can't connect to database: $DBI::errstr\n";
+	) or die "Can't connect to database (maybe you have to run build-db.pl first?): $DBI::errstr\n";
+    # TODO: in case there is no DB built yet, it fails later, catch it!
 	$dbh->do("PRAGMA synchronous = OFF; PRAGMA journal_mode = WAL;"); # speed-up!
 
 	# collect words which
@@ -92,16 +94,16 @@ SELECT word FROM words WHERE word == ? AND id >= ? AND id <= ?;
 SQL
 	my $sth = $dbh->prepare($select_words_query);
 	my($low, $high) = ($options{"low"}*1000, $options{"high"}*1000);
-	for my $word (keys %$words_href){ 
-		#say "DEBUG: $word";
+	for my $word (keys %$words_href){
 		$sth->execute($word, $low, $high); #TODO do sth about the constant
 		# copy word data to the filtered list if there is a match.
 		$out_wordlist{$word} = $words_href->{$word} if($sth->fetch);
 	}
+	$dbh -> disconnect;
 	return %out_wordlist;
 }
 
-sub collect_words{
+sub collect_words {
 	my($inp_file, $words_hr) = @_;
 	# TODO more clever tokenization of sentences?
 	my $SENTENCE_SEP = "([\.\?!])"; # sentence ending characters
@@ -123,7 +125,7 @@ sub collect_words{
 				s/([A-Z])/\L$1/g; # case-insensitivity. TODO add switch?
 				next if not /^[a-z]+$/; # filter out numbers and the like TODO unicode!
 				# OK, found a word. Add the new context and increase occurence tally
-				$words_hr->{$_}{contexts} = []; #TODO delete
+                $words_hr->{$_}{contexts} //= []; #TODO delete
 				push $words_hr->{$_}{contexts}, $sentence;
 				$words_hr->{$_}{occurences}++;
 			  }
@@ -131,36 +133,42 @@ sub collect_words{
 	}
 }
 
-sub get_context{
-	my $word = pop @_;
-	my %wordlist = @_;
-	$wordlist{$word} =~ /(?<pre>(\b\S+\b\W*){0,20}) # max 10 words before
-	(?<target>$word)
-	(?<post>(\W*(\W*?\b\S+\b){0,20}\.?))/xi; # and 10 words after
-	return "$+{pre}", BOLD, "$+{target}", RESET, "$+{post}";
+sub get_contexts_string {
+    my $wordlist        = shift;
+    my $word            = shift;
+    my $contexts_string = "";
+    for my $context (@{$wordlist->{$word}{contexts}}) {
+        $context =~ /(?<pre>(\b\S+\b\W*){0,20}) # max 20 words before
+        (?<target>$word)
+        (?<post>(\W*(\W*?\b\S+\b){0,20}\.?))/xi; # and 20 words after
+        $contexts_string = $contexts_string . "$+{pre}" . BOLD . "$+{target}" . RESET . "$+{post}\n";
+        #$contexts_string = $contexts_string . "$+{pre}" . "$+{target}" . "$+{post}\n";
+    }
+    return $contexts_string;
 }
-sub printwordlist{
+
+sub printwordlist {
 	my %wordlist = @_;
 	for(sort keys %wordlist){
 		say BOLD, $_, RESET; #TODO boldprint subroutine + add switch
-		say get_context(%wordlist, $_);
+		say get_contexts_string(%wordlist, $_);
 		# print context TODO make optional
 		#print "..." if $+{post}[-1]
 	}
 }
 
-sub interactive{ #TODO break this up!
+sub interactive { #TODO break this up!
 	my %wordlist = @_;
-	my %tosave;
+	my @tosave;
 	my $finished;
-	for(sort keys %wordlist){
+	for(sort keys %wordlist) {
 		last if($finished);
 		my $word = $_;
 		while(1){
 			print BOLD, $word, RESET, " (C)ontext/(D)ictionary/(S)ave/(Q)uit/(N)ext: ";
 			chomp ($_ = <STDIN>);
 			if(/^C/i){ # Display context
-				say get_context(%wordlist, $word);
+				say get_contexts_string(\%wordlist, $word);
 				next;
 			}
 			elsif(/^D/i){ # Look up word in dictionary
@@ -177,7 +185,7 @@ sub interactive{ #TODO break this up!
 				$target = $word if(/^D$/i); # wihout arguments save the word
 				# save the argument if there is any (useful for inflection etc.)
 				$target = $1 if(/^D\s+([a-z]+)/i);
-				$tosave{$word} = 1;
+				push @tosave, $word;
 
 			}
 			elsif(/^Q/i){ # Quit (break out from loop and save words)
@@ -193,10 +201,13 @@ sub interactive{ #TODO break this up!
 			}
 		}
 	}
-	# save the words from %tosave
-	my @words = keys %tosave;
-	if(@words){
-		my $out_name = "words.out";
+    save_words(\@tosave);
+}
+
+sub save_words {
+    my $tosave = shift;
+	if(@$tosave){
+		my $out_name = SAVED_WORDS_PATH;
 		if(-e $out_name){
 			print "Warning: output file $out_name exists, overwrite? (y/n) ";
 			while(my $user_input = <STDIN>){
@@ -213,6 +224,6 @@ sub interactive{ #TODO break this up!
 		}
 		open my $out_fh, ">", "$out_name"
 		  or die "Can't open output file, reason: $!";
-		say $out_fh $_ for(@words);
+		say $out_fh $_ for(@$tosave);
 	}
 }
